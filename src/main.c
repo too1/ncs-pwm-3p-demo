@@ -121,7 +121,7 @@ static int pwm_init(void)
 }
 
 static nrf_pwm_values_individual_t seq_values_ab_1[PWM_BUF_LENGTH], seq_values_ab_2[PWM_BUF_LENGTH];
-static nrf_pwm_values_individual_t seq_values_c_1[PWM_BUF_LENGTH], seq_values_c_2[PWM_BUF_LENGTH];
+__ALIGN(0x10000) static nrf_pwm_values_individual_t seq_values_c_1[PWM_BUF_LENGTH], seq_values_c_2[PWM_BUF_LENGTH];
 static nrf_pwm_sequence_t seq_ab_1, seq_ab_2, seq_c_1, seq_c_2;
 
 static void pwm_start(void) 
