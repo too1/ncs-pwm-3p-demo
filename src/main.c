@@ -47,8 +47,11 @@ static nrfx_timer_t m_timer_pwm_step = NRFX_TIMER_INSTANCE(TIMER_INST_INDEX);
 static uint8_t dppi_ch_pwm_step; 
 static uint8_t dppi_ch_pwm_start;
 
-K_SEM_DEFINE(m_sem_update_pwm_buf, 0, 1);
-static int m_pwm_update_buf_index;
+K_SEM_DEFINE(m_sem_update_pwm_buf, 1, 1);
+static int m_new_duty_cycle;
+static bool m_pwm_buf_update_pending[] = {false, false};
+
+static void set_pwm_sequence(uint32_t duty_cycle, uint32_t seq_index);
 
 void nrfx_pwm_handler(nrfx_pwm_evt_type_t event_type, void * p_context)
 {
@@ -57,15 +60,25 @@ void nrfx_pwm_handler(nrfx_pwm_evt_type_t event_type, void * p_context)
 		case NRFX_PWM_EVT_END_SEQ0:
 			//printk("ENDSEQ0-C%i\n", pwm_index);
 			if(pwm_index == 0) {
-				m_pwm_update_buf_index = 0;
-				k_sem_give(&m_sem_update_pwm_buf);
+				if(m_pwm_buf_update_pending[0]) {
+					m_pwm_buf_update_pending[0] = false;
+					set_pwm_sequence(m_new_duty_cycle, 0);
+					if(!m_pwm_buf_update_pending[1]) {
+						k_sem_give(&m_sem_update_pwm_buf);
+					}
+				}
 			}
 			break;
 		case NRFX_PWM_EVT_END_SEQ1:
 			//printk("ENDSEQ1-C%i\n", pwm_index);
 			if(pwm_index == 0) {
-				m_pwm_update_buf_index = 1;
-				k_sem_give(&m_sem_update_pwm_buf);
+				if(m_pwm_buf_update_pending[1]) {
+					m_pwm_buf_update_pending[1] = false;
+					set_pwm_sequence(m_new_duty_cycle, 1);
+					if(!m_pwm_buf_update_pending[0]) {
+						k_sem_give(&m_sem_update_pwm_buf);
+					}
+				}
 			}
 			break;
 		default:
@@ -158,7 +171,15 @@ static void pwm_start(void)
 }
 
 #define IDLE_VALUE PWM_COUNTERTOP // TODO: Figure out why the max value gives low output....
-static void set_pwm_sequence(uint32_t seq_index, uint32_t duty_cycle)
+
+static void set_duty_cycle(uint32_t duty_cycle)
+{
+	k_sem_take(&m_sem_update_pwm_buf, K_FOREVER);
+	m_pwm_buf_update_pending[0] = m_pwm_buf_update_pending[1] = true;
+	m_new_duty_cycle = duty_cycle;
+}
+
+static void set_pwm_sequence(uint32_t duty_cycle, uint32_t seq_index)
 {
 	nrf_pwm_values_individual_t *values_ab = (seq_index == 0) ? seq_values_ab_1 : seq_values_ab_2;
 	nrf_pwm_values_individual_t *values_c = (seq_index == 0) ? seq_values_c_1 : seq_values_c_2;
@@ -277,16 +298,7 @@ void main(void)
 	while (1) {
 		k_msleep(100);
 
-		if(k_sem_take(&m_sem_update_pwm_buf, K_NO_WAIT) == 0) {
-			if(m_pwm_update_buf_index == 0) {
-				// Safe to update sequence 0
-				set_pwm_sequence(0, counter);
-			} else {
-				// Safe to update sequence 1
-				set_pwm_sequence(1, counter);
-			}
-			counter += 10;
-			if(counter > PWM_COUNTERTOP) counter = 12;
-		}
+		set_duty_cycle(counter);
+		counter = ((counter + 20)  > PWM_COUNTERTOP) ? 12 : (counter + 20);
 	}
 }
