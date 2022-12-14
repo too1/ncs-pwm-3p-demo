@@ -11,21 +11,41 @@
 #include <nrfx_egu.h>
 #include <nrfx_timer.h>
 
-/* 1000 msec = 1 sec */
-#define SLEEP_TIME_MS   1000
-
+// Configurable defines
 #define PWM_COUNTERTOP 100
-
-#define PWM_INVERTED(a) ((a) | 0x8000) 
 
 #define PWM_STEP_SUBDIV 6
 #define PWM_STEP_COUNT  6
 #define PWM_BUF_LENGTH (PWM_STEP_COUNT*PWM_STEP_SUBDIV)
 
-static nrfx_pwm_t m_pwm_ab = NRFX_PWM_INSTANCE(1);
-static nrfx_pwm_t m_pwm_c  = NRFX_PWM_INSTANCE(2);
-static nrfx_egu_t m_egu = NRFX_EGU_INSTANCE(2);
-static nrfx_timer_t m_timer_pwm_step = NRFX_TIMER_INSTANCE(1);
+#define PWM_INST_AB_INDEX   1
+#define PWM_INST_C_INDEX	2
+#define EGU_INST_INDEX		2
+#define TIMER_INST_INDEX	1
+#define EGU_CH_TRIGGER_PWM 	0
+#define EGU_CH_START_PWM 	1
+
+// Derived (non configurable) defines
+#define PWM_INVERTED(a) ((a) | 0x8000) 
+#define SUBSCRIBE_ENABLE 0x80000000
+#define PUBLISH_ENABLE   0x80000000
+
+#define PWM_INST_AB			CONCAT(NRF_PWM, PWM_INST_AB_INDEX)
+#define PWM_AB_IRQn			CONCAT(CONCAT(PWM, PWM_INST_AB_INDEX), _IRQn)
+#define PWM_AB_irq_handler	CONCAT(CONCAT(nrfx_pwm_, PWM_INST_AB_INDEX), _irq_handler)
+#define PWM_INST_C			CONCAT(NRF_PWM, PWM_INST_C_INDEX)
+#define PWM_C_IRQn			CONCAT(CONCAT(PWM, PWM_INST_C_INDEX), _IRQn)
+#define PWM_C_irq_handler	CONCAT(CONCAT(nrfx_pwm_, PWM_INST_C_INDEX), _irq_handler)
+#define EGU_INST			CONCAT(NRF_EGU, EGU_INST_INDEX)
+#define TIMER_INST			CONCAT(NRF_TIMER, TIMER_INST_INDEX)
+
+static nrfx_pwm_t m_pwm_ab = NRFX_PWM_INSTANCE(PWM_INST_AB_INDEX);
+static nrfx_pwm_t m_pwm_c  = NRFX_PWM_INSTANCE(PWM_INST_C_INDEX);
+static nrfx_egu_t m_egu = NRFX_EGU_INSTANCE(EGU_INST_INDEX);
+static nrfx_timer_t m_timer_pwm_step = NRFX_TIMER_INSTANCE(TIMER_INST_INDEX);
+
+static uint8_t dppi_ch_pwm_step; 
+static uint8_t dppi_ch_pwm_start;
 
 K_SEM_DEFINE(m_sem_update_pwm_buf, 0, 1);
 static int m_pwm_update_buf_index;
@@ -92,10 +112,12 @@ static int pwm_init(void)
     nrfx_pwm_init(&m_pwm_c,  &config1, nrfx_pwm_handler, (void*)1);
 
 	// If PWM callbacks are to be used, remember to configure the interrupts correctly
-	IRQ_DIRECT_CONNECT(PWM1_IRQn, 0, nrfx_pwm_1_irq_handler, 0);
-	irq_enable(PWM1_IRQn);
-	IRQ_DIRECT_CONNECT(PWM2_IRQn, 0, nrfx_pwm_2_irq_handler, 0);
-	irq_enable(PWM2_IRQn);
+	IRQ_DIRECT_CONNECT(PWM_AB_IRQn, 0, PWM_AB_irq_handler, 0);
+	irq_enable(PWM_AB_IRQn);
+	IRQ_DIRECT_CONNECT(PWM_C_IRQn, 0, PWM_C_irq_handler, 0);
+	irq_enable(PWM_C_IRQn);
+
+	return 0;
 }
 
 static nrf_pwm_values_individual_t seq_values_ab_1[PWM_BUF_LENGTH], seq_values_ab_2[PWM_BUF_LENGTH];
@@ -121,8 +143,18 @@ static void pwm_start(void)
     seq_c_2.repeats         = 1;
     seq_c_2.end_delay       = 0;
 
-	nrfx_pwm_complex_playback(&m_pwm_ab, &seq_ab_1, &seq_ab_2, 1, NRFX_PWM_FLAG_SIGNAL_END_SEQ0 | NRFX_PWM_FLAG_SIGNAL_END_SEQ1 | NRFX_PWM_FLAG_LOOP);
-	nrfx_pwm_complex_playback(&m_pwm_c, &seq_c_1, &seq_c_2, 1, NRFX_PWM_FLAG_SIGNAL_END_SEQ0 | NRFX_PWM_FLAG_SIGNAL_END_SEQ1 | NRFX_PWM_FLAG_LOOP);
+	nrfx_pwm_complex_playback(&m_pwm_ab, &seq_ab_1, &seq_ab_2, 1, NRFX_PWM_FLAG_SIGNAL_END_SEQ0 | NRFX_PWM_FLAG_SIGNAL_END_SEQ1 | NRFX_PWM_FLAG_LOOP | NRFX_PWM_FLAG_START_VIA_TASK);
+	nrfx_pwm_complex_playback(&m_pwm_c, &seq_c_1, &seq_c_2, 1, NRFX_PWM_FLAG_SIGNAL_END_SEQ0 | NRFX_PWM_FLAG_SIGNAL_END_SEQ1 | NRFX_PWM_FLAG_LOOP | NRFX_PWM_FLAG_START_VIA_TASK);
+
+	// Set up a DPPI connection between an EGU channel and the two PWM peripheral start tasks
+	nrfx_dppi_channel_alloc(&dppi_ch_pwm_start);
+	PWM_INST_AB->SUBSCRIBE_SEQSTART[0] = SUBSCRIBE_ENABLE | dppi_ch_pwm_start;
+	PWM_INST_C->SUBSCRIBE_SEQSTART[0] = SUBSCRIBE_ENABLE | dppi_ch_pwm_start;
+	EGU_INST->PUBLISH_TRIGGERED[EGU_CH_START_PWM] = PUBLISH_ENABLE | dppi_ch_pwm_start;
+	nrfx_dppi_channel_enable(dppi_ch_pwm_start);
+
+	// Start both the PWM's at the same time by triggering the EGU channel
+	EGU_INST->TASKS_TRIGGER[EGU_CH_START_PWM] = 1;
 }
 
 #define IDLE_VALUE PWM_COUNTERTOP // TODO: Figure out why the max value gives low output....
@@ -187,18 +219,14 @@ static void set_pwm_sequence(uint32_t seq_index, uint32_t duty_cycle)
 	}
 }
 
-static uint8_t dppi_ch_pwm_step; 
-#define EGU_CH_TRIGGER_PWM 0
-#define SUBSCRIBE_ENABLE 0x80000000
-#define PUBLISH_ENABLE   0x80000000
 static void ppi_egu_init(void)
 {
 	nrfx_dppi_channel_alloc(&dppi_ch_pwm_step);
 	nrfx_egu_init(&m_egu, 5, 0, 0);
-	NRF_PWM1->SUBSCRIBE_NEXTSTEP = SUBSCRIBE_ENABLE | dppi_ch_pwm_step;
-	NRF_PWM2->SUBSCRIBE_NEXTSTEP = SUBSCRIBE_ENABLE | dppi_ch_pwm_step;
-	NRF_EGU2->PUBLISH_TRIGGERED[EGU_CH_TRIGGER_PWM] = PUBLISH_ENABLE | dppi_ch_pwm_step;
-	NRF_TIMER1->PUBLISH_COMPARE[0] = PUBLISH_ENABLE | dppi_ch_pwm_step;
+	PWM_INST_AB->SUBSCRIBE_NEXTSTEP = SUBSCRIBE_ENABLE | dppi_ch_pwm_step;
+	PWM_INST_C->SUBSCRIBE_NEXTSTEP = SUBSCRIBE_ENABLE | dppi_ch_pwm_step;
+	EGU_INST->PUBLISH_TRIGGERED[EGU_CH_TRIGGER_PWM] = PUBLISH_ENABLE | dppi_ch_pwm_step;
+	TIMER_INST->PUBLISH_COMPARE[0] = PUBLISH_ENABLE | dppi_ch_pwm_step;
 	nrfx_dppi_channel_enable(dppi_ch_pwm_step);
 }
 
@@ -248,9 +276,7 @@ void main(void)
 	uint32_t counter = 12;
 	while (1) {
 		k_msleep(100);
-		//NRF_PWM1->TASKS_NEXTSTEP = 1;
-		//NRF_PWM2->TASKS_NEXTSTEP = 1;
-		//nrfx_egu_trigger(&m_egu, EGU_CH_TRIGGER_PWM);
+
 		if(k_sem_take(&m_sem_update_pwm_buf, K_NO_WAIT) == 0) {
 			if(m_pwm_update_buf_index == 0) {
 				// Safe to update sequence 0
