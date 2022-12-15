@@ -55,29 +55,22 @@ static void set_pwm_sequence(uint32_t duty_cycle, uint32_t seq_index);
 
 void nrfx_pwm_handler(nrfx_pwm_evt_type_t event_type, void * p_context)
 {
-	int pwm_index = (int)p_context;
 	switch(event_type) {
 		case NRFX_PWM_EVT_END_SEQ0:
-			//printk("ENDSEQ0-C%i\n", pwm_index);
-			if(pwm_index == 0) {
-				if(m_pwm_buf_update_pending[0]) {
-					m_pwm_buf_update_pending[0] = false;
-					set_pwm_sequence(m_new_duty_cycle, 0);
-					if(!m_pwm_buf_update_pending[1]) {
-						k_sem_give(&m_sem_update_pwm_buf);
-					}
+			if(m_pwm_buf_update_pending[0]) {
+				m_pwm_buf_update_pending[0] = false;
+				set_pwm_sequence(m_new_duty_cycle, 0);
+				if(!m_pwm_buf_update_pending[1]) {
+					k_sem_give(&m_sem_update_pwm_buf);
 				}
 			}
 			break;
 		case NRFX_PWM_EVT_END_SEQ1:
-			//printk("ENDSEQ1-C%i\n", pwm_index);
-			if(pwm_index == 0) {
-				if(m_pwm_buf_update_pending[1]) {
-					m_pwm_buf_update_pending[1] = false;
-					set_pwm_sequence(m_new_duty_cycle, 1);
-					if(!m_pwm_buf_update_pending[0]) {
-						k_sem_give(&m_sem_update_pwm_buf);
-					}
+			if(m_pwm_buf_update_pending[1]) {
+				m_pwm_buf_update_pending[1] = false;
+				set_pwm_sequence(m_new_duty_cycle, 1);
+				if(!m_pwm_buf_update_pending[0]) {
+					k_sem_give(&m_sem_update_pwm_buf);
 				}
 			}
 			break;
@@ -121,8 +114,8 @@ static int pwm_init(void)
         .step_mode    = NRF_PWM_STEP_TRIGGERED
     };
 
-    nrfx_pwm_init(&m_pwm_ab, &config0, nrfx_pwm_handler, (void*)0);
-    nrfx_pwm_init(&m_pwm_c,  &config1, nrfx_pwm_handler, (void*)1);
+    nrfx_pwm_init(&m_pwm_ab, &config0, nrfx_pwm_handler, 0);
+    nrfx_pwm_init(&m_pwm_c,  &config1, 0, 0);
 
 	// If PWM callbacks are to be used, remember to configure the interrupts correctly
 	IRQ_DIRECT_CONNECT(PWM_AB_IRQn, 0, PWM_AB_irq_handler, 0);
